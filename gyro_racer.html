@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gyro Racer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Inter', sans-serif;
+            touch-action: none; /* Prevent scrolling on mobile */
+        }
+        
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            max-width: 600px; /* Constrain width for desktop for a mobile feel */
+            margin: 0 auto;
+            background-color: #222;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(4px);
+            z-index: 10;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 50px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4);
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 20px;
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .hud-text {
+            color: #fff;
+            font-size: 1.5rem;
+            font-weight: 800;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+
+        <div id="hud" class="hidden">
+            <div class="hud-text" id="scoreDisplay">SCORE: 0</div>
+        </div>
+
+        <div id="startScreen" class="overlay">
+            <h1 class="text-5xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">NEON RIDER</h1>
+            <p class="text-gray-300 mb-6 text-sm max-w-xs">Tilt your phone left/right to steer, or use the Left/Right arrow keys.</p>
+            <p class="text-yellow-400 text-xs max-w-xs mb-4">Note: Gyro requires a secure connection (HTTPS) on mobile.</p>
+            <button id="startBtn" class="btn">Start & Enable Gyro</button>
+        </div>
+
+        <div id="gameOverScreen" class="overlay hidden">
+            <h1 class="text-5xl font-extrabold mb-2 text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.8)]">CRASHED!</h1>
+            <p class="text-2xl mb-6">Final Score: <span id="finalScore" class="font-bold text-cyan-400">0</span></p>
+            <button id="restartBtn" class="btn">Play Again</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameContainer = document.getElementById('game-container');
+
+        // UI Elements
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const hud = document.getElementById('hud');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const finalScore = document.getElementById('finalScore');
+        const startBtn = document.getElementById('startBtn');
+        const restartBtn = document.getElementById('restartBtn');
+
+        // Game State Variables
+        let isPlaying = false;
+        let animationId;
+        let score = 0;
+        let gameSpeed = 5;
+        let frameCount = 0;
+
+        // Resize Canvas dynamically
+        function resizeCanvas() {
+            canvas.width = gameContainer.clientWidth;
+            canvas.height = gameContainer.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Colors
+        const ROAD_COLOR = '#2a2a35';
+        const LINE_COLOR = '#ffffff';
+        const PLAYER_COLOR = '#00f2fe';
+        const ENEMY_COLORS = ['#ff0844', '#ffb199', '#f6d365', '#a18cd1'];
+
+        // Entities
+        let player = {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 70,
+            speed: 7,
+            vx: 0
+        };
+
+        let obstacles = [];
+        let roadLines = [];
+
+        // Input State
+        const keys = {
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+        let gyroTilt = 0; // -1 to 1 based on tilt
+
+        // Keyboard Listeners
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = false;
+            }
+        });
+
+        // Gyroscope Listener
+        function handleOrientation(event) {
+            if (!isPlaying) return;
+            
+            // event.gamma is left-to-right tilt in degrees (-90 to 90)
+            let gamma = event.gamma; 
+            
+            // Handle edge cases where device is upside down
+            if (gamma === null) return;
+
+            // Clamp the gamma value to a comfortable steering range (-45 to 45 degrees)
+            const maxTilt = 45;
+            let clampedGamma = Math.max(-maxTilt, Math.min(maxTilt, gamma));
+
+            // Normalize between -1 and 1
+            gyroTilt = clampedGamma / maxTilt;
+        }
+
+        async function requestGyroAndStart() {
+            // Check if iOS 13+ device orientation permission is required
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const permissionState = await DeviceOrientationEvent.requestPermission();
+                    if (permissionState === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                    } else {
+                        console.log("Gyro permission denied.");
+                    }
+                } catch (error) {
+                    console.error("Error requesting gyro permission:", error);
+                }
+            } else {
+                // Non-iOS 13+ devices
+                window.addEventListener('deviceorientation', handleOrientation);
+            }
+            
+            initGame();
+        }
+
+        startBtn.addEventListener('click', requestGyroAndStart);
+        restartBtn.addEventListener('click', initGame);
+
+        function initGame() {
+            // Reset player
+            player.width = canvas.width * 0.12; // Dynamic size based on screen
+            player.height = player.width * 1.8;
+            player.x = canvas.width / 2 - player.width / 2;
+            player.y = canvas.height - player.height - 40;
+            player.vx = 0;
+
+            // Reset state
+            obstacles = [];
+            roadLines = [];
+            score = 0;
+            gameSpeed = 6;
+            frameCount = 0;
+            gyroTilt = 0;
+
+            // Initialize road lines
+            for (let i = 0; i < canvas.height; i += 60) {
+                roadLines.push({ y: i });
+            }
+
+            // UI
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            hud.classList.remove('hidden');
+            updateScoreDisplay();
+
+            isPlaying = true;
+            if (animationId) cancelAnimationFrame(animationId);
+            gameLoop();
+        }
+
+        function drawCar(x, y, w, h, color, isPlayer = false) {
+            ctx.save();
+            ctx.translate(x, y);
+
+            // Car body
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.roundRect(0, 0, w, h, 8);
+            ctx.fill();
+
+            // Windshield
+            ctx.fillStyle = '#111';
+            ctx.beginPath();
+            ctx.roundRect(w * 0.15, h * 0.25, w * 0.7, h * 0.25, 4);
+            ctx.fill();
+
+            // Rear window
+            ctx.beginPath();
+            ctx.roundRect(w * 0.15, h * 0.7, w * 0.7, h * 0.15, 3);
+            ctx.fill();
+
+            // Headlights
+            const lightColor = isPlayer ? '#fff' : '#ffffaa';
+            ctx.fillStyle = lightColor;
+            ctx.beginPath();
+            ctx.roundRect(w * 0.1, h * 0.05, w * 0.2, h * 0.1, 2);
+            ctx.roundRect(w * 0.7, h * 0.05, w * 0.2, h * 0.1, 2);
+            ctx.fill();
+            
+            if (isPlayer) {
+                // Glow effect for player headlights
+                ctx.shadowColor = '#fff';
+                ctx.shadowBlur = 15;
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.fillRect(w * 0.1, 0, w * 0.2, h * 0.05);
+                ctx.fillRect(w * 0.7, 0, w * 0.2, h * 0.05);
+            }
+
+            // Taillights
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath();
+            ctx.roundRect(w * 0.1, h * 0.85, w * 0.2, h * 0.1, 2);
+            ctx.roundRect(w * 0.7, h * 0.85, w * 0.2, h * 0.1, 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function drawRoad() {
+            ctx.fillStyle = ROAD_COLOR;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw center dashed lines
+            ctx.fillStyle = LINE_COLOR;
+            const lineWidth = canvas.width * 0.02;
+            const lineHeight = 40;
+            
+            roadLines.forEach(line => {
+                // Two center lines
+                ctx.globalAlpha = 0.5;
+                ctx.fillRect(canvas.width * 0.33 - lineWidth/2, line.y, lineWidth, lineHeight);
+                ctx.fillRect(canvas.width * 0.66 - lineWidth/2, line.y, lineWidth, lineHeight);
+                ctx.globalAlpha = 1.0;
+                
+                line.y += gameSpeed;
+                if (line.y > canvas.height) {
+                    line.y = -lineHeight;
+                }
+            });
+
+            // Draw edge borders
+            ctx.fillStyle = '#ffcc00';
+            ctx.fillRect(10, 0, 10, canvas.height);
+            ctx.fillRect(canvas.width - 20, 0, 10, canvas.height);
+        }
+
+        function updateLogic() {
+            // 1. Player Movement (Combine Keyboard and Gyro)
+            player.vx = 0;
+            
+            // Keyboard logic
+            if (keys.ArrowLeft) player.vx -= player.speed;
+            if (keys.ArrowRight) player.vx += player.speed;
+            
+            // Gyro logic (adds to velocity)
+            if (gyroTilt !== 0) {
+                player.vx += gyroTilt * player.speed * 1.5; // multiplier for sensitivity
+            }
+
+            player.x += player.vx;
+
+            // Boundary checks
+            const roadMargin = 25;
+            if (player.x < roadMargin) player.x = roadMargin;
+            if (player.x + player.width > canvas.width - roadMargin) player.x = canvas.width - roadMargin - player.width;
+
+            // 2. Obstacle Spawning
+            // Increase speed slightly over time
+            if (frameCount % 600 === 0) gameSpeed += 0.5;
+
+            // Spawn rate gets faster as speed increases
+            let spawnRate = Math.max(30, 80 - (gameSpeed * 2));
+            
+            if (frameCount % Math.floor(spawnRate) === 0) {
+                const obsWidth = player.width;
+                const obsHeight = player.height;
+                const minX = roadMargin;
+                const maxX = canvas.width - roadMargin - obsWidth;
+                const randomX = minX + Math.random() * (maxX - minX);
+                
+                obstacles.push({
+                    x: randomX,
+                    y: -obsHeight,
+                    width: obsWidth,
+                    height: obsHeight,
+                    color: ENEMY_COLORS[Math.floor(Math.random() * ENEMY_COLORS.length)]
+                });
+            }
+
+            // 3. Update Obstacles & Collision
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                obs.y += gameSpeed * 0.8; // Obstacles move slightly slower than road for realism
+
+                // Collision detection (AABB)
+                // Add a small forgiving hitbox margin
+                const margin = 5;
+                if (
+                    player.x + margin < obs.x + obs.width - margin &&
+                    player.x + player.width - margin > obs.x + margin &&
+                    player.y + margin < obs.y + obs.height - margin &&
+                    player.y + player.height - margin > obs.y + margin
+                ) {
+                    gameOver();
+                    return;
+                }
+
+                // Remove if off screen and add score
+                if (obs.y > canvas.height) {
+                    obstacles.splice(i, 1);
+                    score += 10;
+                    updateScoreDisplay();
+                }
+            }
+            
+            // Passive score increase
+            if (frameCount % 10 === 0) {
+                score++;
+                updateScoreDisplay();
+            }
+
+            frameCount++;
+        }
+
+        function updateScoreDisplay() {
+            scoreDisplay.innerText = `SCORE: ${score}`;
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            hud.classList.add('hidden');
+            gameOverScreen.classList.remove('hidden');
+            finalScore.innerText = score;
+            
+            // Draw explosion effect
+            ctx.fillStyle = 'rgba(255, 50, 50, 0.5)';
+            ctx.beginPath();
+            ctx.arc(player.x + player.width/2, player.y + player.height/2, player.width * 1.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function gameLoop() {
+            if (!isPlaying) return;
+
+            // Clear canvas via drawRoad
+            drawRoad();
+
+            // Update state
+            updateLogic();
+
+            if (!isPlaying) return; // Exit if game over occurred in updateLogic
+
+            // Draw obstacles
+            obstacles.forEach(obs => {
+                drawCar(obs.x, obs.y, obs.width, obs.height, obs.color, false);
+            });
+
+            // Draw player
+            drawCar(player.x, player.y, player.width, player.height, PLAYER_COLOR, true);
+
+            // Request next frame
+            animationId = requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
